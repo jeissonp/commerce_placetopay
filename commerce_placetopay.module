@@ -1,0 +1,299 @@
+<?php
+/**
+ * Implements hook_permission().
+ */
+function commerce_plpacetopay_permission() {
+  return array(
+    'commerce placetopay settings' => array(
+      'title' => t('Commerce placetopay settings'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_placetopay_menu() {
+  $items = array();
+
+  $items['commerce_placetopay/cron/%'] = array(
+    'page callback' => 'commerce_placetopay_run_cron',
+    'access callback' => 'commerce_placetopay_cron_access',
+    'access arguments' => array(2),
+    'type' => MENU_CALLBACK,
+    'file' => 'commerce_placetopay.cron.inc',
+  );
+
+  $items['admin/commerce_placetopay/settings'] = array(
+    'title' => 'Commerce Playtopay Settings',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('commerce_placetopay_settings'),
+    'access arguments' => array('commerce placetopay settings'),
+    'type' => MENU_CALLBACK,
+    'file' => 'commerce_placetopay.settings.inc',
+  );
+
+  $items['commerce_placetopay/response/%commerce_order/%/%'] = array(
+    'title' => 'Respuesta de Plataforma Place to Pay',
+    'page callback' => 'commerce_placetopay_response',
+    'page arguments' => array(2),
+    'access callback' => 'commerce_placetopay_response_access',
+    'access arguments' => array(2, 3, 4),
+    'file' => 'commerce_placetopay.response.inc',
+  );
+  
+  return $items;
+}
+
+function commerce_placetopay_cron_access($token) {
+  return $token == md5(variable_get('cron_key', 'drupal') . variable_get('commerce_placetopay_cron_key', 'commerce_placetopay'));
+}
+
+function commerce_placetopay_get_token() {
+  return md5(variable_get('cron_key', 'drupal') . variable_get('commerce_placetopay_cron_key', 'commerce_placetopay'));
+}
+
+function commerce_placetopay_response_access($order, $time, $token) {
+  return $token == md5($order->order_id . '+' . $time);
+}
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function commerce_placetopay_commerce_payment_method_info() {
+  $payment_methods = array();
+
+  $payment_methods['commerce_placetopay'] = array(
+    'base' => 'commerce_placetopay',
+    'title' => t('Placetopay'),
+    'short_title' => t('P2P'),
+    'display_title' => t('Placetopay'),
+    'description' => t('Placetopay Website Payments'),
+    'terminal' => FALSE,
+    'offsite' => TRUE,
+    'offsite_autoredirect' => FALSE,
+    'active' => TRUE,
+  );
+
+  return $payment_methods;
+}
+
+/**
+ * Payment method callback: settings form.
+ * CALLBACK_commerce_payment_method_settings_form
+ */
+function commerce_placetopay_settings_form($settings = NULL) {
+  $form = array();
+
+  $form['p2p_customer_site_id'] = array(
+    '#title' => t('P2P Customer Site ID'),
+    '#description' => t('The number of user in the system Place to Pay'),
+    '#type' => 'textfield',
+    '#default_value' => isset($settings['p2p_customer_site_id']) ? $settings['p2p_customer_site_id'] : NULL,
+    '#required' => TRUE,
+  );
+  
+  $form['p2p_key_id'] = array(
+    '#title' => t('The secret key'),
+    '#description' => t('The secret key in the system Place to Pay'),
+    '#type' => 'textfield',
+    '#size' => 12,
+    '#default_value' => isset($settings['p2p_key_id']) ? $settings['p2p_key_id'] : NULL,
+    '#required' => TRUE,
+  );
+
+  $form['p2p_passphrase'] = array(
+    '#title' => t('The passphrase'),
+    '#description' => t('The passphrase in the system Place to Pay'),
+    '#type' => 'textfield',
+    '#size' => 12,
+    '#default_value' => isset($settings['p2p_passphrase']) ? $settings['p2p_passphrase'] : NULL,
+    '#required' => TRUE,
+  );
+
+  $form['p2p_recipient_key_id'] = array(
+    '#title' => t('The recipient key id'),
+    '#description' => t('The recipient key id in the system Place to Pay'),
+    '#type' => 'textfield',
+    '#size' => 12,
+    '#default_value' => isset($settings['p2p_recipient_key_id']) ? $settings['p2p_recipient_key_id'] : NULL,
+    '#required' => TRUE,
+  );
+
+  $form['p2p_gnupg_program_path'] = array(
+    '#title' => t('The path of the program GNUPG'),
+    '#type' => 'textfield',
+    '#size' => 30,
+    '#default_value' => isset($settings['p2p_gnupg_program_path']) ? $settings['p2p_gnupg_program_path'] : NULL,
+    '#required' => TRUE,
+  );
+
+  $form['p2p_gnupg_home_directory'] = array(
+    '#title' => t('The directory path where the keys'),
+    '#description' => t('The directory path where the keys'),
+    '#type' => 'textfield',
+    '#size' => 30,
+    '#default_value' => isset($settings['p2p_gnupg_home_directory']) ? $settings['p2p_gnupg_home_directory'] : NULL,
+    '#required' => TRUE,
+  );
+
+  return $form;
+}
+
+
+/**
+ * Payment method callback: checkout form submission.
+ * CALLBACK_commerce_payment_method_redirect_form
+ */
+function commerce_placetopay_redirect_form($form, &$form_state, $order, $payment_method) {
+  module_load_include('inc', 'commerce_placetopay', 'includes/PlacetoPay');
+  $p2p = new PlacetoPay();
+  
+  $settings = $payment_method['settings'];
+  
+  $p2p->setGPGProgramPath($settings['p2p_gnupg_program_path']);
+
+  $p2p->setGPGHomeDirectory($settings['p2p_gnupg_home_directory']);
+
+  $wrapper = entity_metadata_wrapper('commerce_order', $order);
+  dpm($order);
+
+	$currency_code = $wrapper->commerce_order_total->currency_code->value();
+
+  $taxes = commerce_placetopay_get_taxes($wrapper);
+
+  $documentType = NULL;
+  $document = NULL;
+  $name = NULL;
+  
+  drupal_alter('commerce_placetopay_payer_info', $documentType, $document, $name);
+  $p2p->setPayerInfo($documentType, $document, $name, $email);
+
+  $p2p->setCurrency($currency_code);
+
+  $p2p->setOverrideReturn(commerce_placetopay_get_url_response($order->order_id));
+
+  $p2p->setLanguage(language_from_default());
+
+  $keyID = $settings['p2p_key_id'];
+  $passPhrase = $settings['p2p_passphrase'];
+  $recipientKeyID = $settings['p2p_recipient_key_id'];
+	$customerSiteID = $settings['p2p_customer_site_id'];
+  $reference = commerce_placetopay_get_reference();
+  $totalAmount = $wrapper->commerce_order_total->amount->value();
+	$taxAmount = $taxes['total'];
+  $devolutionBaseAmount = $taxes['base_price'];
+
+  $payment_request = $p2p->getPaymentRedirect($keyID, $passPhrase, $recipientKeyID,
+  $customerSiteID, $reference, $totalAmount, $taxAmount, $devolutionBaseAmount);
+
+  $form['order_id'] = array(
+    '#type' => 'value',
+    '#value' => $order,
+  );
+
+  $form['instance_id'] = array(
+    '#type' => 'value',
+    '#value' => $payment_method['instance_id'],
+  );
+
+  $form['reference'] = array(
+    '#type' => 'value',
+    '#value' => $reference,
+  );
+
+  $form['amount'] = array(
+    '#type' => 'value',
+    '#value' => $totalAmount,
+  );
+
+  $form['currency'] = array(
+    '#type' => 'value',
+    '#value' => $currency_code,
+  );
+
+  if (!empty($payment_request)) {
+    $form['payment_request'] = array(
+      '#type' => 'value',
+      '#value' => $payment_request,
+    );
+
+    $form['submit'] = array(
+      '#type' => 'submit',
+      '#value' => t('Proceed to Placetopay'),
+    );
+  }
+  else {
+    drupal_set_message($p2p->getErrorMessage(), 'error');
+  }
+  
+  return $form;
+}
+
+function commerce_placetopay_redirect_form_submit($form, &$form_state) {
+  $values = $form_state['values'];
+  commerce_placetopay_transation_placetopay($values['reference'], $values['instance_id'],
+  $values['order_id'], $values['amount'], $value['currency']);
+  $form_state['redirect'] = $values['payment_request'];
+}
+
+/**
+ * Generate reference
+ */
+function commerce_placetopay_get_reference($order_id) {
+  return str_pad($order_id, 6, '0', STR_PAD_LEFT) . strtoupper(uniqid());
+}
+
+/**
+ * Generate url response.
+ */
+function commerce_placetopay_get_url_response($order_id) {
+  $time = time();
+  $token = md5($order_id . '+' . $time);
+  $path = 'commerce_placetopay/response/' . $order->order_id . '/' . $time . '/' . $token;
+  return url($path, array('absolute' => TRUE));
+}
+
+/**
+ * Get taxes.
+ */
+function commerce_placetopay_get_taxes($wrapper) {
+  $taxes = array(
+    'base_price' => 0,
+    'total' => 0,
+  );
+
+  $components = $wrapper->commerce_order_total->data->value();
+  if (@$components['components']) {
+    foreach ($components['components'] as $key => $component) {
+      if ($component['name'] == 'base_price') {
+        $taxes['base_price'] = $component['price']['amount'];
+      }
+      else {
+        $taxes['total'] += $component['price']['amount'];
+      }
+    }
+  }
+
+  return $taxes;
+}
+
+/**
+ * Store transaction pending confirmation.
+ */
+function commerce_placetopay_transation_placetopay($remote_id, $payment_method, $order_id, $amount, $currency) {
+  db_merge('commerce_placetopay_pending')
+    ->key(array(
+      'cppay_reference' => $remote_id,
+      'order_id' => $order_id,
+    ))
+    ->fields(array(
+      'cppay_reference' => $remote_id,
+      'order_id' => $order_id,
+      'cppay_currency' => $currency,
+      'cppay_amount' => $amount,
+      'cppay_method' => $payment_method,
+      'cppay_state' => 1,
+    ))
+    ->execute();
+}

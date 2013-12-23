@@ -1,0 +1,66 @@
+<?php
+/**
+ * Implements hook_install().
+ */
+function commerce_placetopay_install() {
+	$cron_key = drupal_hash_base64(drupal_random_bytes(55));
+  variable_set('commerce_placetopay_cron_key', $cron_key);
+}
+
+/**
+ * Implements hook_schema().
+ */
+function commerce_placetopay_schema() {
+	$schema = array();
+
+	$schema['commerce_placetopay_pending'] = array(
+		'fields' => array(
+			'cppay_id' => array(
+				'type' => 'serial',
+			),
+			'cppay_reference' => array(
+				'type' => 'varchar',
+				'length' => 255,
+			),
+			'order_id' => array(
+				'type' => 'int',
+				'length' => 11,
+			),
+			'cppay_currency' => array(
+				'type' => 'varchar',
+        'length' => 5,
+			),
+			'cppay_amount' => array(
+				'type' => 'numeric',
+        'precision' => 20,
+        'scale' => 2,
+			),
+			'cppay_method' => array(
+				'type' => 'varchar',
+				'length' => 255,
+			),
+			'cppay_state' => array(
+				'type' => 'int',
+				'default' => 1,
+			),
+		),
+		'primary key' => array('cppay_id'),
+	);
+
+	return $schema;
+}
+
+/**
+ * Change field reference.
+ */
+function commerce_placetopay_update_7000() {
+	$table = drupal_get_schema('commerce_placetopay_pending', TRUE);
+	db_change_field('commerce_placetopay_pending', 'cppay_reference', 'cppay_reference', $table['fields']['cppay_reference']);
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function commerce_placetopay_uninstall() {
+	variable_del('commerce_placetopay_cron_key');
+}
